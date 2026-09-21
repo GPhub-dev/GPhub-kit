@@ -24,19 +24,33 @@ def __get_libs(all_files: list[str]) -> list[str]:
     return [f for f in all_files if f.endswith(".parquet")]
 
 
-def __postprocess_library(scripts_dir: Path, library: str, *, display: bool = False) -> GPlibrary:
-    """Post-process a library."""
+def __postprocess_library(
+    scripts_dir: Path, library: str, *, display: bool = False, formats: tuple[str, ...] = ("png",)
+) -> GPlibrary | None:
+    """Post-process a library; a stored prediction with non-finite values is reported and skipped."""
     lib = GPlibrary(library=library)
+    if not lib.is_valid:
+        console.print(
+            f"[light_coral]⚠️  Library [blue]{library}[light_coral]: invalid prediction (NaN or wrong size), skipped."
+        )
+        return None
     lib.print_metrics() if display else None
-    lib.plot_results(path=scripts_dir.resolve())
+    lib.plot_results(path=scripts_dir.resolve(), formats=formats)
     return lib
 
 
-def postprocess() -> None:
-    """Post-process all libraries."""
+def postprocess(formats: tuple[str, ...] = ("png",), libraries: tuple[str, ...] | None = None) -> None:
+    """Post-process the stored results; ``formats`` lists the image formats to write (default: PNG).
+
+    ``libraries`` restricts the plots and the report to the named libraries (script names without the ``lib_`` prefix,
+    e.g. ``("DACE", "EGObox")``); by default every library with a stored prediction is post-processed.
+    """
     caller_dir = get_main_script_path()
     all_scripts = __get_script_files(caller_dir / "results" / "storage")
-    all_libs = __get_libs(all_scripts)
+    all_libs = sorted(__get_libs(all_scripts), key=str.lower)  # same order in every report and legend
+    if libraries is not None:
+        wanted = {name.removeprefix("lib_") for name in libraries}
+        all_libs = [f for f in all_libs if f.removesuffix(".parquet").removeprefix("lib_") in wanted]
 
     tab, gp_libs = None, {}
 
@@ -57,10 +71,13 @@ def postprocess() -> None:
             filename = script_file.removesuffix(f".{extension}").removeprefix("lib_")
             scripts_dir = caller_dir / "results" / "img"
             progress.update(task_id, description=f"[cyan] |  [light_coral]Library: [blue]{filename}", cas="cwqd")
-            gp_libs[filename] = __postprocess_library(scripts_dir, filename, display=False)
-            tab = table(headers=gp_libs[filename]._metrics_header, title="Report Metrics") if tab is None else tab
-            tab.add_row(*gp_libs[filename]._metrics_row)
+            lib = __postprocess_library(scripts_dir, filename, display=False, formats=formats)
             progress.advance(task_id)
+            if lib is None:
+                continue
+            gp_libs[filename] = lib
+            tab = table(headers=lib._metrics_header, title="Report Metrics") if tab is None else tab
+            tab.add_row(*lib._metrics_row)
         progress.update(task_id, description="[cyan] |  [bold green]✅  Done!\n", cas="cwqd")
 
     spinner = Spinner(
@@ -71,13 +88,19 @@ def postprocess() -> None:
     with Live(spinner, console=console, refresh_per_second=10):
         # COMPARISON PLOTS
         out_path = caller_dir / "results" / "img"
-        plotter.radar._adimensional_metrics_by_library(gp_libs, path=out_path)
-        plotter.radar._metrics(gp_libs, path=out_path)
+        plotter.radar._adimensional_metrics_by_library(gp_libs, path=out_path, formats=formats)
+        plotter.radar._metrics(gp_libs, path=out_path, formats=formats)
 
         with Path(os.devnull).open("w") as devnull:
             writing_console = Console(record=True, width=175, log_time=False, log_path=False, file=devnull)
             writing_console.print(gphubkit_logo)
             writing_console.print(tab)
+            for lib in gp_libs.values():
+                if lib.n_invalid_var:
+                    writing_console.print(
+                        f"{lib.display_name}: {lib.n_invalid_var} of {lib.test_y.size} predictive variances are negative "
+                        "or not finite; NLPD and MSLL are undefined (n/a)."
+                    )
             writing_console.save_text((caller_dir / "results" / "report.log").resolve().__str__())
         time.sleep(0.25)
         spinner.update(

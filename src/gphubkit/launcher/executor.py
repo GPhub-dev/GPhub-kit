@@ -10,13 +10,8 @@ import threading
 import contextlib
 import importlib.util
 
-from rpy2 import robjects
-from rpy2.robjects import numpy2ri
 import numpy as np
-import matlab
 import psutil
-import juliacall as jl
-import matlab.engine
 
 from ..utils import stats
 
@@ -51,7 +46,6 @@ def python_executor(
     logger: logging.Logger,
 ) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
     """Run a Python script with the given data."""
-    # Dynamically import the module from script_path
     path = Path(script_path)
     module_name = path.stem
     spec = importlib.util.spec_from_file_location(module_name, script_path)
@@ -64,7 +58,6 @@ def python_executor(
 
     def init_model() -> PythonGPLibrary:
         """Initialize the model."""
-        # Find the PythonGPLibrary subclass in the module
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             if isinstance(attr, type) and issubclass(attr, PythonGPLibrary) and attr is not PythonGPLibrary:
@@ -100,6 +93,8 @@ def matlab_executor(
     logger: logging.Logger,
 ) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
     """Run the MATLAB script with the given data."""
+    import matlab
+    import matlab.engine
 
     def get_matlab_pids() -> set[int]:
         """Get the PIDs of all running MATLAB processes."""
@@ -112,22 +107,16 @@ def matlab_executor(
                 continue
         return pids
 
-    # Find existing MATLAB PIDs
     existing_matlab_pids = get_matlab_pids()
-
-    # Start MATLAB engine with output capture
     eng = matlab.engine.start_matlab("-nodisplay")
 
-    # Find the new MATLAB PID
     current_matlab_pids = get_matlab_pids()
     new_pids = current_matlab_pids - existing_matlab_pids
 
     matlab_pids_to_monitor: list[int] = []
     if new_pids:
-        # We found the new process
         matlab_pids_to_monitor = list(new_pids)
         info_msg = f"Monitoring specific MATLAB process(es): {matlab_pids_to_monitor}"
-        # logging.info(info_msg)
         logger.info(info_msg)
 
     else:
@@ -184,7 +173,6 @@ def matlab_executor(
         output_buffer = StringIO()
         try:
             eng.run(script_path, nargout=0, stdout=output_buffer, stderr=output_buffer)  # type: ignore
-            # Log any output from MATLAB
             output = output_buffer.getvalue()
             if output.strip():
                 info_msg = f"MATLAB output: {output.strip()}"
@@ -192,6 +180,11 @@ def matlab_executor(
         except Exception as e:
             err_msg = f"MATLAB execution error: {e}"
             logger.exception(err_msg)
+            stop_monitoring.set()
+            if monitor_thread:
+                monitor_thread.join()
+            eng.quit()  # type: ignore
+            raise
         finally:
             output_buffer.close()
 
@@ -206,7 +199,6 @@ def matlab_executor(
 
         return elapsed_time, memory_used
 
-    # Initialize MATLAB package (no memory measurement needed)
     eng.workspace["ACTION"] = "init"  # type: ignore
     output_buffer = StringIO()
     try:
@@ -218,18 +210,17 @@ def matlab_executor(
     except Exception as e:
         err_msg = f"MATLAB init error: {e}"
         logger.exception(err_msg)
+        eng.quit()  # type: ignore
+        raise
     finally:
         output_buffer.close()
 
-    # Train the model with memory measurement
     train_time, train_memory = evaluator(action="train")
-    # Predict using the trained model with memory measurement
     pred_time, pred_memory = evaluator(action="test")
 
     pred_y = np.array(eng.workspace["pred_y"])  # type: ignore
     pred_var = np.array(eng.workspace["pred_var"])  # type: ignore
 
-    # Quit MATLAB engine
     eng.quit()  # type: ignore
     return pred_y, pred_var, train_time, train_memory, pred_time, pred_memory
 
@@ -242,7 +233,8 @@ def julia_executor(
     logger: logging.Logger,
 ) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
     """Run the Julia script with the given data."""
-    # Initialize Julia
+    import juliacall as jl
+
     se = jl.Main  # type: ignore
 
     # Convert data to Julia arrays
@@ -256,8 +248,6 @@ def julia_executor(
         se.ACTION = action
 
         try:
-            # Use Pipe for stdout/stderr capture (Julia 1.7+ compatible)
-            # redirect_stdout() without args returns (rd, wr) pipe ends
             se.seval("""
                 original_stdout = stdout
                 original_stderr = stderr
@@ -267,7 +257,6 @@ def julia_executor(
 
             se.include(script_path)
 
-            # Restore streams and capture output
             se.seval("""
                 redirect_stdout(original_stdout)
                 redirect_stderr(original_stderr)
@@ -277,7 +266,6 @@ def julia_executor(
                 captured_stderr = String(read(stderr_rd))
             """)
 
-            # Log any captured output
             stdout_output = str(se.captured_stdout)
             stderr_output = str(se.captured_stderr)
 
@@ -291,7 +279,6 @@ def julia_executor(
         except Exception as e:
             err_msg = f"Julia execution error: {e}"
             logger.exception(err_msg)
-            # Try to restore stdout/stderr on error
             try:
                 se.seval("""
                     redirect_stdout(original_stdout)
@@ -299,14 +286,12 @@ def julia_executor(
                 """)
             except:
                 pass
+            raise
 
         return se
 
-    # Initialize Julia package
     se, _, _ = evaluator(action="init")
-    # Train the model
     se, train_time, train_memory = evaluator(action="train")
-    # Predict using the trained model
     se, pred_time, pred_memory = evaluator(action="test")
 
     pred_y = np.array(se.pred_y)
@@ -323,9 +308,10 @@ def r_executor(
     logger: logging.Logger,
 ) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
     """Run the R script with the given data."""
-    # Use context manager for numpy to R conversion
+    from rpy2 import robjects
+    from rpy2.robjects import numpy2ri
+
     with numpy2ri.converter.context():
-        # Convert data to R objects
         robjects.globalenv["train_x"] = train_x
         robjects.globalenv["train_y"] = train_y.reshape(-1, 1)
         robjects.globalenv["test_x"] = test_x
@@ -336,19 +322,14 @@ def r_executor(
         def evaluator(action: str) -> None:
             """Evaluate an action in R."""
             robjects.globalenv["ACTION"] = action
-            # Temporarily disable numpy conversion to avoid S4 object issues
             with robjects.conversion.localconverter(robjects.default_converter):
                 r_source(script_path)  # type: ignore
 
-        # Initialize R package
         _, _, _ = evaluator(action="init")
 
-        # Train the model
         _, train_time, train_memory = evaluator(action="train")
-        # Predict using the trained model
         _, pred_time, pred_memory = evaluator(action="test")
 
-        # Extract values directly from global environment
         pred_y = np.array(robjects.globalenv["pred_y"])
         pred_var = np.array(robjects.globalenv["pred_var"])
 

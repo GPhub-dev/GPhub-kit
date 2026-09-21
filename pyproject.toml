@@ -17,7 +17,6 @@ dependencies = [
     "scikit-learn>=1.6.1",
     "scipy>=1.12.0",
     "memory-profiler>=0.61.0",
-    "matlabengine>=25.1.2",
     "juliacall>=0.9.27",
     "rpy2>=3.6.2",
     "polars>=1.33.0",
@@ -29,6 +28,7 @@ dependencies = [
 gphubkit = "gphubkit.__main__:app"
 
 [project.optional-dependencies]
+matlab = ["matlabengine>=25.1.2"]
 gpflow = ["gpflow>=2.9.2"]
 gpytorch = ["gpytorch>=1.13"]
 egobox = ["egobox>=0.25.1"]

@@ -59,6 +59,8 @@ It provides a unified platform for:
 ```bash
 # Generate report and visualizations
 ❯ gphubkit postprocess
+# ... also as PDF
+❯ gphubkit postprocess -f png -f pdf
 ```
 
 ## Python API
@@ -140,7 +142,13 @@ uv add "gphubkit[all]"
 ```
 ## Requirements
 
-`MATLAB`, `Julia`, and `R` must be installed on your system. The `gphubkit` package interfaces with these languages through `matlabengine`, `r2py`, and `juliacall` respectively. Please refer to each library's documentation for installation instructions.
+`MATLAB`, `Julia`, and `R` must be installed on your system to run the libraries written in these languages. The `gphubkit` package interfaces with them through `matlabengine`, `rpy2`, and `juliacall` respectively. Each bridge is imported on demand: when a runtime is missing, only the scripts written in that language fail. `matlabengine` can only be installed next to a MATLAB installation and is therefore an optional dependency:
+
+```bash
+uv add "gphubkit[matlab]"
+```
+
+A script that raises an error during `init`, `train`, or `test` yields no result file (the error is written to the log). Please refer to each library's documentation for installation instructions.
 
 ---
 

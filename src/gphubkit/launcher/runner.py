@@ -94,10 +94,8 @@ def run(benchmark: GPhubkitBenchmark) -> None:
     test_x = benchmark.test_x
     caller_dir = get_main_script_path()
 
-    # Redirect stdout and stderr to log file keeping progressbar on console
     console = Console(file=sys.__stderr__, force_terminal=True, width=90, log_time=False, log_path=False)
     logger = get_logger()
-    # Capture stdout and stderr for libraries
     original_stdout = sys.stdout
     original_stderr = sys.stderr
 
@@ -163,6 +161,5 @@ def run(benchmark: GPhubkitBenchmark) -> None:
                 progress.advance(task_id)
         progress.update(task_id, description="[cyan] |  [bold green]✅  Done!\n", cas="cwqd")
 
-    # Restore original streams
     sys.stdout = original_stdout
     sys.stderr = original_stderr

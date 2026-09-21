@@ -159,11 +159,27 @@ def run() -> None:
 
 
 @app.command()
-def postprocess() -> None:
+@click.option(
+    "--format",
+    "-f",
+    "formats",
+    multiple=True,
+    default=("png",),
+    show_default=True,
+    help="Image format of the plots; repeat the option for several formats (e.g. -f png -f pdf).",
+)
+@click.option(
+    "--library",
+    "-l",
+    "libraries",
+    multiple=True,
+    help="Post-process this library only; repeat the option for several libraries (default: all).",
+)
+def postprocess(formats: tuple[str, ...], libraries: tuple[str, ...]) -> None:
     """Postprocess GPhub-kit benchmark results."""
     import gphubkit as gpk
 
-    gpk.postprocess()
+    gpk.postprocess(formats=tuple(formats), libraries=tuple(libraries) or None)
 
 
 @run.command()

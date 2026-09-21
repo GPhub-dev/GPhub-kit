@@ -58,7 +58,7 @@ def __1d(gplib: GPlibrary, *, show_test: bool = True) -> None:
         edgecolor="k",
         linewidth=0.5,
     )
-    plt.title(f"{gplib.library}")
+    plt.title(f"{gplib.display_name}")
     plt.legend(loc=0)
     plt.xlabel(r"$x$")
     plt.ylabel(r"$y$")
@@ -92,14 +92,14 @@ def __2d(gplib: GPlibrary, *, show_train_points: bool = True) -> None:
 
     ax2.set_xlabel(r"$x_1$")
     ax2.set_ylabel(r"$x_2$")
-    ax2.set_title(rf"{gplib.library}")
+    ax2.set_title(rf"{gplib.display_name}")
     cbar = fig.colorbar(contour2, ax=ax2)
     cbar.set_label(r"$\hat{y}_{\text{pred}}$")
     ax2.set_aspect(1.0 / ax2.get_data_ratio(), adjustable="box")
 
     ax3.set_xlabel(r"$x_1$")
     ax3.set_ylabel(r"$x_2$")
-    ax3.set_title(rf"{gplib.library}")
+    ax3.set_title(rf"{gplib.display_name}")
     cbar = fig.colorbar(contour3, ax=ax3)
     cbar.set_label(r"$\hat{\sigma}^2_{\text{pred}}$")
     ax3.set_aspect(1.0 / ax3.get_data_ratio(), adjustable="box")
@@ -174,7 +174,7 @@ def __3d(gplib: GPlibrary, *, show_train_points: bool = True) -> None:
     ax2.set_xlabel(r"$x_1$")
     ax2.set_ylabel(r"$x_2$")
     ax2.set_zlabel(r"$\hat{y}_{\text{pred}}$")
-    ax2.set_title(f"{gplib.library}")
+    ax2.set_title(f"{gplib.display_name}")
 
     if show_train_points:
         ax2.scatter(

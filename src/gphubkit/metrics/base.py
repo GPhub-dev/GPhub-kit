@@ -9,6 +9,13 @@ import polars as pl
 
 from ..utils import table, console
 
+DISPLAY_NAMES = {
+    "EGObox": "egobox-gp",
+    "GaussianProcesses": "GaussianProcesses.jl",
+    "GaussianProcessesjl": "GaussianProcesses.jl",
+    "scikitlearn": "scikit-learn",
+}
+
 
 @define
 class GPlibrary:
@@ -41,6 +48,11 @@ class GPlibrary:
         self.pred_memory = results["pred_memory"].item()
 
     @property
+    def is_valid(self) -> bool:
+        """Whether the stored prediction can be scored (right size, finite values)."""
+        return self.pred_y.shape == self.test_y.shape and bool(np.all(np.isfinite(self.pred_y)))
+
+    @property
     def mae(self) -> np.ndarray:
         """Mean Absolute Error."""
         return mean_absolute_error(self.test_y, self.pred_y)  # type: ignore
@@ -66,36 +78,48 @@ class GPlibrary:
         return r2_score(self.test_y, self.pred_y)  # type: ignore
 
     @property
-    def nlpd(self) -> np.ndarray:
-        """Negative Log Predictive Density."""
-        pred_var = np.maximum(self.pred_var, 1e-6)
-        log_var_term = 0.5 * np.log(2 * np.pi * pred_var)
-        squared_error_term = 0.5 * ((self.test_y - self.pred_y) ** 2) / pred_var
-        # Compute NLPD for each prediction and return average NLPD
-        return np.mean(log_var_term + squared_error_term)  # type: ignore
+    def display_name(self) -> str:
+        """Name of the library in plots and reports."""
+        return DISPLAY_NAMES.get(self.library, self.library)
+
+    @property
+    def n_invalid_var(self) -> int:
+        """Number of test points whose predictive variance is negative or not finite."""
+        if self.pred_var.shape != self.test_y.shape:
+            return int(self.test_y.size)
+        return int(np.sum(~np.isfinite(self.pred_var) | (self.pred_var < 0)))
+
+    def _nll(self) -> np.ndarray | None:
+        """Negative log predictive density of each test point, with the variance as returned by the library.
+
+        No floor is applied to the variance: a floor rewards overconfident models and depends on the scale
+        of the output. With a negative or non-finite variance the density is undefined (None). A variance
+        that is numerically zero is kept (1e-300 only avoids 0/0): the score is then very large, as it should.
+        """
+        if self.n_invalid_var:
+            return None
+        var = np.maximum(self.pred_var, 1e-300)
+        return 0.5 * ((self.test_y - self.pred_y) ** 2 / var + np.log(2 * np.pi * var))
+
+    @property
+    def nlpd(self) -> float:
+        """Negative Log Predictive Density, mean over the test points (NaN if a variance is invalid)."""
+        nll = self._nll()
+        return float("nan") if nll is None else float(np.mean(nll))
 
     @property
     def msll(self) -> float:
-        """Mean Standardized Log Loss."""
-        # Clip variances to prevent numerical instability
-        pred_var = np.maximum(self.pred_var, 1e-6)
+        """Mean Standardized Log Loss (Rasmussen & Williams, 2006, Sect. 2.5).
 
-        # Compute log loss manually for better numerical stability
-        log_var_term = 0.5 * np.log(2 * np.pi * pred_var)
-        squared_error_term = 0.5 * ((self.test_y - self.pred_y) ** 2) / pred_var
-        nll = log_var_term + squared_error_term
-
-        # Compute baseline with stabilized variance
-        baseline_mean = np.mean(self.test_y)
-        baseline_var = np.maximum(np.var(self.test_y), 1e-6)
-
-        # Compute baseline log loss manually
-        baseline_log_var = 0.5 * np.log(2 * np.pi * baseline_var)
-        baseline_squared_error = 0.5 * ((self.test_y - baseline_mean) ** 2) / baseline_var
-        baseline_nll = baseline_log_var + baseline_squared_error
-
-        # Compute MSLL
-        return np.mean(nll - baseline_nll)  # type: ignore
+        The loss of the model minus the loss of the trivial Gaussian predictor whose mean and variance are
+        those of the *training* outputs, averaged over the test points (NaN if a variance is invalid).
+        """
+        nll = self._nll()
+        if nll is None:
+            return float("nan")
+        mu0, var0 = np.mean(self.train_y), np.var(self.train_y, ddof=1)
+        baseline = 0.5 * ((self.test_y - mu0) ** 2 / var0 + np.log(2 * np.pi * var0))
+        return float(np.mean(nll - baseline))
 
     @property
     def residuals(self) -> np.ndarray:
@@ -106,19 +130,25 @@ class GPlibrary:
     def _metrics_row(self) -> list[str]:
         """Metrics row."""
         return [
-            f"{self.library}",
+            f"{self.display_name}",
             f"{self.mae:.4e}",
             f"{self.rmse:.4e}",
             f"{self.mse:.4e}",
             f"{self.medae:.4e}",
             f"{self.r2:.4f}",
-            f"{self.nlpd:.4f}",
-            f"{self.msll:.4f}",
+            self.__probabilistic(self.nlpd),
+            self.__probabilistic(self.msll),
             f"{self.train_time:.4f} s",
             f"{self.pred_time:.4f} s",
             f"{self.train_memory:.2f} MB",
             f"{self.pred_memory:.2f} MB",
         ]
+
+    def __probabilistic(self, value: float) -> str:
+        """NLPD or MSLL in the report: 'n/a' when undefined (the report adds a note with the reason)."""
+        if np.isnan(value):
+            return "n/a"
+        return f"{value:.4f}" if abs(value) < 1e6 else f"{value:.2e}"
 
     @property
     def _metrics_header(self) -> list[str]:
@@ -144,16 +174,21 @@ class GPlibrary:
         tab.add_row(*self._metrics_row)
         console.log(tab)
 
-    def plot_results(self, path: Path, *, show: bool = False) -> None:
-        """Plot results."""
+    def plot_results(self, path: Path, *, show: bool = False, formats: tuple[str, ...] = ("png",)) -> None:
+        """Plot results, one file per format (e.g. ``("png", "pdf")``)."""
         from .. import plotter
 
-        plotter.crossvalidation.plot(self.pred_y, self.test_y, self.library)
-        plotter.save(plotter.plt, path=path / "crossvalidation", filename=f"lib_{self.library}")
-        plotter.crossvalidation.plot_density(self.pred_y, self.test_y, self.library)
-        plotter.save(plotter.plt, path=path / "density", filename=f"lib_{self.library}")
-        plotter.crossvalidation.plot_residuals(self.residuals, library=f"{self.library}")
-        plotter.save(plotter.plt, path=path / "residuals", filename=f"residuals_{self.library}")
-        plotter.prediction.plot(gplib=self)
-        plotter.save(plotter.plt, path=path / "prediction", filename=f"lib_{self.library}")
+        def save(folder: str, filename: str) -> None:
+            for fmt in formats:
+                plotter.save(plotter.plt, path=path / folder, filename=filename, format=fmt)
+
+        plotter.crossvalidation.plot(self.pred_y, self.test_y, self.display_name)
+        save("crossvalidation", f"lib_{self.library}")
+        plotter.crossvalidation.plot_density(self.pred_y, self.test_y, self.display_name)
+        save("density", f"lib_{self.library}")
+        plotter.crossvalidation.plot_residuals(self.residuals, library=self.display_name)
+        save("residuals", f"residuals_{self.library}")
+        if self.test_x.shape[1] <= 2:  # prediction plots exist for one and two inputs only
+            plotter.prediction.plot(gplib=self)
+            save("prediction", f"lib_{self.library}")
         plotter.plt.show() if show else plotter.plt.close("all")
